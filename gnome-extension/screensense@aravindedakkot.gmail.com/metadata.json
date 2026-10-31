@@ -1,0 +1,7 @@
+{
+  "uuid": "screensense@aravindedakkot.gmail.com",
+  "name": "ScreenSense",
+  "description": "Moves focus to the monitor you are looking at, using your webcam. This is the GNOME half of ScreenSense: it activates windows and moves the pointer on request from the screensense service, which must be installed separately. Video is processed only by that local service and never leaves your computer.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version-name": "0.1.0"
+}

@@ -1,0 +1,11 @@
+# Reproducible build environment for ScreenSense.
+# Usage:
+#   docker build -t screensense-dev -f docker/Dockerfile.dev .
+#   docker run --rm -v "$PWD":/src -w /src screensense-dev \
+#       sh -c 'cmake -S . -B build-docker -G Ninja && cmake --build build-docker && ctest --test-dir build-docker'
+FROM ubuntu:26.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build pkg-config \
+        libopencv-dev libglib2.0-dev \
+    && rm -rf /var/lib/apt/lists/*
