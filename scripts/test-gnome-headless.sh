@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # End-to-end test of the GNOME Shell extension in a throwaway headless
 # GNOME Shell with two virtual monitors. Uses private config, data and
 # D-Bus, so the real desktop session is not touched.

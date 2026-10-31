@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The daemon's own D-Bus service, org.screensense.Daemon.
 //
 // Lets the GNOME extension (or any other front end) show whether the camera

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Face detection (YuNet) and head direction estimation.
 #pragma once
 

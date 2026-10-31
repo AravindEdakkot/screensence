@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Decides which monitor the user is looking at, and when to switch.
 //
 // Pure logic: no camera, no desktop. Feed it head poses with timestamps and

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // ScreenSense configuration: a small INI file under $XDG_CONFIG_HOME.
 #pragma once
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // GNOME Shell backend (Wayland and X11).
 //
 // Mutter does not let outside programs activate windows or move the pointer

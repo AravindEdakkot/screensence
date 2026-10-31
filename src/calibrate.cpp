@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // `screensense calibrate`: record the head pose for each monitor.
 //
 // Camera placement differs on every desk (laptop on the left, centred under

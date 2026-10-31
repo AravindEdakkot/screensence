@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // A desktop backend performs the one non-portable step: changing focus.
 //
 // Every compositor exposes window activation and pointer warping

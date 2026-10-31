@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Head direction from five facial landmarks. Header-only and dependency-free
 // so it can be unit-tested without OpenCV.
 #pragma once

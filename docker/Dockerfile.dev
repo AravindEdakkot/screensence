@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Reproducible build environment for ScreenSense.
 # Usage:
 #   docker build -t screensense-dev -f docker/Dockerfile.dev .

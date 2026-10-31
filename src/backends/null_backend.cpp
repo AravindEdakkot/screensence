@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Does nothing except log. For testing the camera and tracking on any
 // desktop. Monitors come from $SCREENSENSE_FAKE_MONITORS, for example
 // "0,0,1920,1080;1920,0,1920,1080", or default to two side-by-side 1080p.

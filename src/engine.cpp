@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // The daemon: camera -> head pose -> tracker -> desktop backend.
 #include <csignal>
 #include <cstdio>

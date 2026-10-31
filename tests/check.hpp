@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Minimal test helper: no framework dependency.
 #pragma once
 #include <cstdio>

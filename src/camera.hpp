@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Webcam capture through OpenCV's V4L2 backend.
 #pragma once
 

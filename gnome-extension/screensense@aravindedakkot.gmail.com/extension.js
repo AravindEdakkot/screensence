@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // ScreenSense GNOME Shell extension.
 //
 // GNOME on Wayland does not let ordinary programs activate windows or move
