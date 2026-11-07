@@ -161,6 +161,168 @@ void pose_math_is_scale_and_roll_invariant() {
     CHECK(std::abs(rp.pitch - q.pitch) < 1e-9);
 }
 
+void input_holds_a_due_switch_until_it_stops() {
+    Tracker tr(params(), kTwo);
+    tr.set_current(0);
+    int64_t t = 0;
+    bool typing = true;
+    int asked = 0;
+    const auto input_active = [&] { ++asked; return typing; };
+    const Pose right{0.20, 0.50};
+
+    // Not due yet: the desktop is not even asked, since asking costs a round trip.
+    CHECK(!tr.update(right, t, input_active));
+    t += 100;
+    CHECK(!tr.update(right, t, input_active));
+    CHECK(asked == 0);
+    CHECK(!tr.state().input_hold);
+
+    // Due, but typing: held for as long as it lasts.
+    for (int i = 0; i < 50; ++i) {
+        t += 100;
+        CHECK(!tr.update(right, t, input_active));
+    }
+    CHECK(asked > 0);
+    CHECK(tr.state().input_hold);
+    CHECK(tr.state().current == 0);
+
+    // Typing stops while still looking there: the switch happens straight away.
+    typing = false;
+    t += 100;
+    auto r = tr.update(right, t, input_active);
+    CHECK(r && *r == 1);
+    CHECK(!tr.state().input_hold);
+}
+
+void looking_back_during_a_hold_cancels_the_switch() {
+    Tracker tr(params(), kTwo);
+    tr.set_current(0);
+    int64_t t = 0;
+    bool typing = true;
+    const auto input_active = [&] { return typing; };
+    for (int i = 0; i < 20; ++i, t += 100) tr.update(Pose{0.20, 0.50}, t, input_active);
+    CHECK(tr.state().input_hold);
+    // Head drifted back to the monitor being typed on, then typing stopped.
+    tr.update(Pose{-0.20, 0.50}, t, input_active);
+    t += 100;
+    typing = false;
+    auto r = tr.update(Pose{-0.20, 0.50}, t, input_active);
+    CHECK(!r);
+    CHECK(tr.state().pending == -1);
+    CHECK(tr.state().current == 0);
+}
+
+void our_own_pointer_move_is_not_user_input() {
+    const int hold = 1500;
+    const int64_t long_ago = 1000000;
+    CHECK(user_input_recent(200, long_ago, hold));    // typing
+    CHECK(!user_input_recent(2000, long_ago, hold));  // hands off for a while
+    CHECK(!user_input_recent(100, 100, hold));        // that "input" was our own move
+    CHECK(!user_input_recent(150, 100, hold));        // ...even if the clocks disagree slightly
+    CHECK(user_input_recent(100, 1000, hold));        // a real key press after our move
+}
+
+void eye_reading_measures_the_iris_within_the_eye() {
+    const Pt a{20, 32}, b{44, 32}, up{32, 26}, low{32, 38};
+    // Iris right of centre, by a quarter of the eye width.
+    auto r = eye_reading(a, b, up, low, Pt{38, 32}, false);
+    CHECK(r && std::abs(r->offset - 0.25) < 1e-9);
+    CHECK(r->width == 24);
+    // The same crop from a mirrored eye means the iris is left of centre in the image.
+    r = eye_reading(a, b, up, low, Pt{38, 32}, true);
+    CHECK(r && std::abs(r->offset + 0.25) < 1e-9);
+    // A closed eye and a nonsense reading give nothing.
+    CHECK(!eye_reading(a, b, Pt{32, 31}, Pt{32, 32}, Pt{32, 32}, false));
+    CHECK(!eye_reading(a, b, up, low, Pt{60, 32}, false));
+    // An eye seen nearly edge-on gives nothing.
+    CHECK(!eye_reading(Pt{30, 32}, Pt{34, 32}, up, low, Pt{32, 32}, false));
+}
+
+void combining_eyes_favours_the_better_seen_one() {
+    const EyeReading wide{0.2, 30}, narrow{-0.1, 10};
+    auto c = combine_eyes(wide, narrow);
+    CHECK(c && std::abs(*c - 0.125) < 1e-9);
+    c = combine_eyes(std::nullopt, narrow);
+    CHECK(c && *c == -0.1);
+    CHECK(!combine_eyes(std::nullopt, std::nullopt));
+}
+
+void eyes_cancel_head_drift_once_calibrated() {
+    // Calibrated: left monitor head -0.2 eye +0.05, right monitor head +0.2 eye -0.05.
+    Config cfg;
+    cfg.calibration.layout = {{0, 0, 1920, 1080}, {1920, 0, 1920, 1080}};
+    cfg.calibration.centers = kTwo;
+    cfg.calibration.eyes = {0.05, -0.05};
+    cfg.eye_gain = 1.0;
+    Tracker tr(params(), gaze_centers(cfg));
+    tr.set_current(0);
+    int64_t t = 0;
+
+    // The head turns most of the way to the right monitor, the eyes stay put by
+    // turning the other way: focus must stay. Head alone would have switched.
+    const Pose drifted{0.10, 0.50};
+    CHECK(!feed(tr, t, with_eyes(drifted, -0.25, cfg.eye_gain), 3000));
+    Tracker head_only(params(), kTwo);
+    head_only.set_current(0);
+    int64_t t2 = 0;
+    CHECK(feed(head_only, t2, drifted, 3000).has_value());
+
+    // Head and eyes both go to the right monitor: focus follows.
+    auto r = feed(tr, t, with_eyes(Pose{0.20, 0.50}, -0.05, cfg.eye_gain), 1000);
+    CHECK(r && *r == 1);
+
+    // Turned off, or with an old calibration, the centres are head direction only.
+    cfg.use_eyes = false;
+    CHECK(gaze_centers(cfg)[0].yaw == kTwo[0].yaw);
+    cfg.use_eyes = true;
+    cfg.calibration.eyes.clear();
+    CHECK(gaze_centers(cfg)[1].yaw == kTwo[1].yaw);
+}
+
+void eyes_are_read_only_when_the_head_has_moved() {
+    Calibration c;
+    c.layout = {{0, 0, 1920, 1080}, {1920, 0, 1920, 1080}};
+    c.centers = {{0.0, 0.5}, {-0.8, 0.5}};
+    CHECK(head_near_monitor(Pose{-0.1, 0.5}, c, 0));
+    CHECK(!head_near_monitor(Pose{-0.3, 0.5}, c, 0));
+    CHECK(head_near_monitor(Pose{-0.7, 0.5}, c, 1));
+    CHECK(!head_near_monitor(Pose{0.0, 0.5}, c, -1));  // focus unknown: must read them
+}
+
+void eye_fit_trusts_only_eyes_that_oppose_the_head() {
+    std::vector<double> yaw, eye;
+    // A head swinging about, with the eyes turning the opposite way plus some noise.
+    for (int i = 0; i < 80; ++i) {
+        const double y = 0.3 * std::sin(i * 0.2);
+        yaw.push_back(y);
+        eye.push_back(-y / 1.5 + 0.03 * std::cos(i * 1.7));
+    }
+    EyeFit f = fit_eye_gain(yaw, eye);
+    CHECK(f.head_moved && f.usable);
+    CHECK(f.correlation < -0.9);
+    CHECK(std::abs(f.gain - 1.5) < 0.1);
+
+    // Eyes moving with the head are not fixed on anything.
+    std::vector<double> same = yaw;
+    f = fit_eye_gain(yaw, same);
+    CHECK(f.head_moved && !f.usable);
+
+    // Noise unrelated to the head.
+    std::vector<double> noise;
+    for (int i = 0; i < 80; ++i) noise.push_back(0.06 * std::sin(i * 2.399));
+    f = fit_eye_gain(yaw, noise);
+    CHECK(f.head_moved && !f.usable);
+
+    // A head that did not move proves nothing, and says so.
+    std::vector<double> still(80, 0.1);
+    f = fit_eye_gain(still, noise);
+    CHECK(!f.head_moved && !f.usable);
+
+    // Too few samples.
+    f = fit_eye_gain({0.1, -0.1}, {-0.1, 0.1});
+    CHECK(!f.usable);
+}
+
 }  // namespace
 
 int main() {
@@ -174,5 +336,13 @@ int main() {
     three_monitors_and_stacked();
     single_monitor_never_switches();
     pose_math_is_scale_and_roll_invariant();
+    input_holds_a_due_switch_until_it_stops();
+    looking_back_during_a_hold_cancels_the_switch();
+    our_own_pointer_move_is_not_user_input();
+    eye_reading_measures_the_iris_within_the_eye();
+    combining_eyes_favours_the_better_seen_one();
+    eyes_cancel_head_drift_once_calibrated();
+    eyes_are_read_only_when_the_head_has_moved();
+    eye_fit_trusts_only_eyes_that_oppose_the_head();
     TEST_MAIN_END();
 }

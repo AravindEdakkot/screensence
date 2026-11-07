@@ -19,13 +19,13 @@ ScreenSense watches you through your camera, so it is built to be trustworthy:
   find your face, then discarded. Nothing is written to disk except your
   settings and calibration, which are a handful of numbers.
 - **You can always see when the camera is on.** A top-bar icon is shown
-  whenever the service is running, with its state and a pause switch.
+  whenever the service is running, with its state and a pause item.
 - **The camera is switched off** while paused, while the screen is locked,
   and until you have calibrated.
 
 ## Status
 
-Version 0.1, early development.
+Version 0.2, early development.
 
 | Desktop | Session | Status |
 |---|---|---|
@@ -39,9 +39,26 @@ ScreenSense is running, a video call app may not get the camera. Pause
 ScreenSense from the top bar before a call. Sharing the camera through
 PipeWire, which avoids this, is on the roadmap.
 
+## Install
+
+On Ubuntu 24.04 or newer, or Debian 12 or newer, download the `.deb` for your
+release from the [Releases](https://github.com/AravindEdakkot/screensence/releases)
+page and install it:
+
+```sh
+sudo apt install ./screensense_0.2.0_ubuntu24.04_amd64.deb
+```
+
+Use the file that matches your release. Then follow [Set up](#set-up). The
+package starts the service at every login for every user of the computer, but
+the camera stays off until that user calibrates. To remove ScreenSense, run
+`sudo apt remove screensense`.
+
+On other distributions, build from source as below.
+
 ## Build and install
 
-Dependencies are a C++20 compiler, CMake, OpenCV 4.8 or newer (with the
+Dependencies are a C++20 compiler, CMake, OpenCV 4.5.4 or newer (with the
 `dnn` and `objdetect` modules) and GLib.
 
 ```sh
@@ -83,10 +100,14 @@ cmake --build build && cmake --install build
    screensense calibrate
    ```
    Each monitor in turn darkens and asks you to look at it for a few
-   seconds. ScreenSense records how your head is turned for each one. Run
+   seconds. ScreenSense records how your head is turned for each one. Then it
+   asks you to keep your eyes on some text while you slowly turn your head,
+   which shows whether your eyes can be followed reliably with your camera. It
+   tells you the result, and uses head direction alone if they cannot. Run
    it again whenever you move the camera or rearrange your monitors. It will
    tell you if your layout changed.
-3. **Start the service**, now and at every login:
+3. **Start the service**, now and at every login. The `.deb` package does
+   this at your next login, so skip this step if you installed it.
    ```sh
    systemctl --user enable --now screensense.service
    ```
@@ -100,7 +121,16 @@ Other commands: `pause`, `resume`, `toggle`, `status` and `cameras`. Run
 
 ## Configuration
 
-Settings live in `~/.config/screensense/config.ini`. Every key is optional.
+The top-bar menu has two switches, **Activate window** and **Move pointer**,
+which choose what happens when you look at another monitor. A change applies
+straight away and is saved. Either can be off. With both off, ScreenSense keeps
+watching but changes nothing.
+
+The same menu sets **Look time**, how long you must look at a monitor before it
+switches, and **Wait after typing**, how long after your last input a switch may
+happen. These also apply straight away and are saved.
+
+All settings live in `~/.config/screensense/config.ini`. Every key is optional.
 After editing, run `systemctl --user reload-or-restart screensense`, or send
 the service `SIGHUP`.
 
@@ -111,20 +141,28 @@ move_pointer = true      # move the mouse pointer to that monitor
 
 [camera]
 device = auto            # auto, an index such as 0, or a path such as /dev/video0
-width = 320
-height = 240
-detect_width = 240       # face detection input width; larger is more precise, costs more CPU
+width = 640              # eye tracking needs at least 640 x 480
+height = 480
+detect_width = 320       # face detection input width; below 320 the head reading gets unreliable
 fps = 10                 # frames per second while your face is visible
 idle_fps = 2             # frames per second after no face for idle_after_s
 idle_after_s = 5
 
 [tracking]
-dwell_ms = 400           # how long you must look at a monitor before it switches
+dwell_ms = 600           # how long you must look at a monitor before it switches
 cooldown_ms = 600        # minimum time between two switches
-hysteresis = 0.25        # how much closer a new monitor must be; higher is steadier
+hysteresis = 0.6         # how much closer a new monitor must be; higher is steadier
 smoothing = 0.5          # 1 = no smoothing, lower = smoother but slower
-min_face_score = 0.75
+min_face_score = 0.75     # how sure face detection must be; the default is 0.5 with OpenCV older than 4.8
+input_hold_ms = 1500     # no switch until this long after the last key press or mouse movement; 0 = off
+use_eyes = true          # use eye direction as well as head direction, once calibrated for it
+eye_gain = 1.0           # how much an eye movement counts; calibration measures this for you
 ```
+
+ScreenSense does not switch while you are using the keyboard or mouse. If you
+are still looking at the other monitor once you stop, it switches then. This
+currently works on GNOME, where the desktop can report the time since your last
+input.
 
 `auto` camera selection skips infrared face-unlock cameras. The pointer
 returns to where you last left it on each monitor.
@@ -143,11 +181,17 @@ webcam ──> face + 5 landmarks ──> head direction ──> which monitor? 
    face gives the left-right turn, and its height between eyes and mouth
    gives the up-down tilt. Both are ratios, so they do not change with your
    distance from the camera or with head tilt to the side.
-3. **Which monitor.** The nearest calibrated monitor wins, but only if it
+3. **Eye direction.** When your head moves away from the current monitor, the
+   bundled MediaPipe iris model reads where your irises sit within your eyes.
+   Adding that to the head direction cancels out a head that moved while your
+   eyes stayed on the screen. It is used only if calibration showed that your
+   eyes can be followed reliably with your camera.
+4. **Which monitor.** The nearest calibrated monitor wins, but only if it
    is clearly nearer than the current one and you keep looking for
    `dwell_ms`. Looking far away from every monitor, at the keyboard or a
-   phone, changes nothing. Neither does losing sight of your face.
-4. **Desktop backend.** Changing focus is the only part that differs
+   phone, changes nothing. Neither does losing sight of your face. A switch
+   also waits until `input_hold_ms` after your last key press or mouse movement.
+5. **Desktop backend.** Changing focus is the only part that differs
    between desktops. Wayland compositors do not let ordinary programs focus
    windows or move the pointer, so each desktop family gets a small backend.
    On GNOME it is a Shell extension that the service talks to over D-Bus.
@@ -158,6 +202,13 @@ Measured on an Intel Core i7-1265U laptop, with the defaults:
 |---|---|---|
 | 10 | about 8 percent | about 80 MB |
 | 5 | about 4 percent | about 60 MB |
+
+These figures were measured at 320 x 240 with `detect_width = 240`. The current
+defaults, 640 x 480 with `detect_width = 320`, read your head far more reliably
+and use roughly twice as much CPU, about 20 percent of one core. Eye tracking
+adds about 10 percent of a core while its model runs, which is only when your
+head has moved away from the current monitor. Lowering `fps` reduces all of this
+in proportion.
 
 While no face is visible, it drops to 2 frames per second. While paused,
 locked or uncalibrated, the camera is off and the service uses no CPU.
@@ -171,7 +222,10 @@ locked or uncalibrated, the camera is off and the service uses no CPU.
 | `gnome-extension/` | The GNOME Shell half |
 | `tests/` | Unit tests for the tracker, pose maths and config |
 | `scripts/test-gnome-headless.sh` | End-to-end test in a throwaway headless GNOME Shell |
+| `debian/` | Debian and Ubuntu packaging |
+| `scripts/build-deb.sh`, `scripts/test-deb.sh` | Build a `.deb` in a clean container, then install and check it |
 | `docker/Dockerfile.dev` | Reproducible build environment |
+| `RELEASING.md` | How to publish a new version |
 
 ## Development
 
@@ -191,7 +245,10 @@ docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/src -w /src screensense-dev \
 two virtual monitors and test windows, then checks every extension call:
 window activation, pointer moves and pointer memory, the calibration
 overlay, and the top-bar indicator. With `--with-daemon` it also runs the
-Docker-built service against it. Your real session is not touched.
+service from `build/` against it. Your real session is not touched.
+
+To build and check the package for a release, run
+`scripts/build-deb.sh ubuntu:24.04` and then `scripts/test-deb.sh ubuntu:24.04`.
 
 ### Adding a desktop backend
 
@@ -203,12 +260,12 @@ calibration and control interface are shared.
 ## Roadmap
 
 1. X11 backend, covering every X11 desktop.
-2. Settings window, and a global shortcut to pause.
+2. Settings window for the remaining options, and a global shortcut to pause.
 3. KDE Plasma Wayland backend, through a KWin script.
 4. wlroots and Hyprland backend.
 5. Camera capture through PipeWire, so video call apps can share the camera.
-6. Packages: .deb through a PPA, .rpm, the Arch User Repository, and the
-   extension on extensions.gnome.org.
+6. Packages: a PPA for apt updates, .rpm, the Arch User Repository, and the
+   extension on extensions.gnome.org. A .deb for Ubuntu and Debian exists.
 
 ## Contact
 

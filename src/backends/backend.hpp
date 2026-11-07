@@ -44,6 +44,10 @@ public:
     // True while the screen is locked; the camera is turned off then.
     virtual bool session_locked() { return false; }
 
+    // Milliseconds since the last keyboard or mouse input, or empty if this
+    // desktop cannot say. Used to avoid switching while someone is typing.
+    virtual std::optional<int64_t> input_idle_ms() { return std::nullopt; }
+
     // Calibration prompts. The default prints to the terminal.
     virtual void show_calibration_target(int index, const std::string& text);
     virtual void hide_calibration_target() {}

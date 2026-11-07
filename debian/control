@@ -1,0 +1,32 @@
+Source: screensense
+Section: utils
+Priority: optional
+Maintainer: Aravind Edakkot <aravindedakkot@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               cmake,
+               pkg-config,
+               libopencv-dev,
+               libglib2.0-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/AravindEdakkot/screensence
+Vcs-Git: https://github.com/AravindEdakkot/screensence.git
+Vcs-Browser: https://github.com/AravindEdakkot/screensence
+Rules-Requires-Root: no
+
+Package: screensense
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Enhances: gnome-shell
+Description: move focus to the monitor you are looking at
+ ScreenSense uses your webcam to see which monitor you are facing, and moves
+ keyboard focus, the mouse pointer, or both there, so you do not have to click
+ to change screens. It waits while you are typing, and can follow your eyes as
+ well as your head.
+ .
+ Video is processed on this computer only. Nothing is recorded or sent
+ anywhere, and the camera is off until you calibrate, while paused and while
+ the screen is locked.
+ .
+ This package contains the background service, which runs as a systemd user
+ service, and the GNOME Shell extension that changes focus. GNOME 45 to 50 is
+ supported.

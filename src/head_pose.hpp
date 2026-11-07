@@ -16,7 +16,12 @@ struct FaceObservation {
     Pose pose;
     float score = 0;
     cv::Rect2f box;
+    Landmarks landmarks;  // in the coordinates of the frame passed in
 };
+
+// Finds a bundled model by file name: installed data dir, then next to the
+// binary, then the source tree (for development builds).
+std::optional<std::string> find_bundled_model(const std::string& file);
 
 class HeadPoseEstimator {
 public:

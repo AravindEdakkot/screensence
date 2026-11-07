@@ -55,6 +55,37 @@ std::string fmt_double(double d) {
     return buf;
 }
 
+// Creates parent directories, then writes via a temporary file and a rename,
+// so a crash can never leave a half-written config behind.
+bool write_atomic(const std::string& path, const std::string& content, std::string* error) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(fs::path(path).parent_path(), ec);
+    if (ec) {
+        if (error) *error = "cannot create " + fs::path(path).parent_path().string() + ": " + ec.message();
+        return false;
+    }
+    std::string tmp = path + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::trunc);
+        if (!f) {
+            if (error) *error = "cannot write " + tmp + ": " + std::strerror(errno);
+            return false;
+        }
+        f << content;
+        if (!f.flush()) {
+            if (error) *error = "write failed for " + tmp;
+            return false;
+        }
+    }
+    fs::rename(tmp, path, ec);
+    if (ec) {
+        if (error) *error = "cannot replace " + path + ": " + ec.message();
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 std::string default_config_path() {
@@ -74,6 +105,7 @@ Config parse_config(const std::string& text, std::vector<std::string>* warnings)
     std::string section;
     std::map<int, MonitorGeometry> layout;
     std::map<int, Pose> centers;
+    std::map<int, double> eyes;
     std::istringstream in(text);
     std::string raw;
     int lineno = 0;
@@ -128,6 +160,9 @@ Config parse_config(const std::string& text, std::vector<std::string>* warnings)
             else if (key == "hysteresis") set_double(cfg.hysteresis, 0, 0.9);
             else if (key == "smoothing") set_double(cfg.smoothing, 0.01, 1);
             else if (key == "min_face_score") set_double(cfg.min_face_score, 0, 1);
+            else if (key == "input_hold_ms") set_int(cfg.input_hold_ms, 0, 60000);
+            else if (key == "use_eyes") set_bool(cfg.use_eyes);
+            else if (key == "eye_gain") set_double(cfg.eye_gain, 0, 5);
             else warn(where + ": unknown key");
         } else if (section == "calibration") {
             // monitorN = x,y,width,height  and  poseN = yaw,pitch
@@ -144,6 +179,9 @@ Config parse_config(const std::string& text, std::vector<std::string>* warnings)
                     layout[*i] = {*n[0], *n[1], *n[2], *n[3]};
                 else
                     warn(where + ": expected x,y,width,height");
+            } else if (auto e = index_of("eye"); e && *e >= 0) {
+                if (auto d = parse_double(val)) eyes[*e] = *d;
+                else warn(where + ": expected a number");
             } else if (auto j = index_of("pose"); j && *j >= 0) {
                 auto parts = split(val, ',');
                 std::optional<double> a, b;
@@ -165,6 +203,13 @@ Config parse_config(const std::string& text, std::vector<std::string>* warnings)
     if (ok) {
         for (auto& [i, g] : layout) cfg.calibration.layout.push_back(g);
         for (auto& [i, p] : centers) cfg.calibration.centers.push_back(p);
+        // Eye values are all or nothing. Without them, head direction still works.
+        bool eyes_ok = eyes.size() == centers.size();
+        for (int i = 0; eyes_ok && i < static_cast<int>(eyes.size()); ++i) eyes_ok = eyes.count(i);
+        if (eyes_ok)
+            for (auto& [i, e] : eyes) cfg.calibration.eyes.push_back(e);
+        else if (!eyes.empty())
+            warn("calibration eye values are incomplete and were ignored; run `screensense calibrate`");
     } else if (!layout.empty() || !centers.empty()) {
         warn("calibration section is incomplete; run `screensense calibrate`");
     }
@@ -204,7 +249,13 @@ std::string serialize_config(const Config& c) {
       << "cooldown_ms = " << c.cooldown_ms << "\n"
       << "hysteresis = " << fmt_double(c.hysteresis) << "\n"
       << "smoothing = " << fmt_double(c.smoothing) << "\n"
-      << "min_face_score = " << fmt_double(c.min_face_score) << "\n";
+      << "min_face_score = " << fmt_double(c.min_face_score) << "\n"
+      << "# Do not switch until this long after the last key press or mouse movement. 0 turns it off.\n"
+      << "input_hold_ms = " << c.input_hold_ms << "\n"
+      << "# Use eye direction as well as head direction, once calibrated for it.\n"
+      << "use_eyes = " << b(c.use_eyes) << "\n"
+      << "# How much an eye movement counts relative to a head movement.\n"
+      << "eye_gain = " << fmt_double(c.eye_gain) << "\n";
     if (c.calibration.valid()) {
         o << "\n[calibration]\n"
           << "# Written by `screensense calibrate`.\n";
@@ -213,38 +264,68 @@ std::string serialize_config(const Config& c) {
             const auto& p = c.calibration.centers[i];
             o << "monitor" << i << " = " << g.x << "," << g.y << "," << g.width << "," << g.height << "\n"
               << "pose" << i << " = " << fmt_double(p.yaw) << "," << fmt_double(p.pitch) << "\n";
+            if (c.calibration.has_eyes()) o << "eye" << i << " = " << fmt_double(c.calibration.eyes[i]) << "\n";
         }
     }
     return o.str();
 }
 
 bool save_config(const Config& cfg, const std::string& path, std::string* error) {
-    namespace fs = std::filesystem;
+    return write_atomic(path, serialize_config(cfg), error);
+}
+
+std::string set_config_value(const std::string& text, const std::string& section, const std::string& key,
+                             const std::string& value) {
+    const std::string setting = key + " = " + value;
+    std::string out;
+    std::string current;
+    bool section_seen = false;
+    bool key_seen = false;
+    size_t insert_at = 0;  // just after the first [section] header
+    std::istringstream in(text);
+    std::string raw;
+    while (std::getline(in, raw)) {
+        const std::string line = trim(raw);
+        if (!line.empty() && line.front() == '[' && line.back() == ']') {
+            current = trim(line.substr(1, line.size() - 2));
+            out += raw + "\n";
+            if (current == section && !section_seen) {
+                section_seen = true;
+                insert_at = out.size();
+            }
+            continue;
+        }
+        const auto eq = line.find('=');
+        const bool comment = line.empty() || line[0] == '#' || line[0] == ';';
+        // Replace every match, because the parser lets the last duplicate win.
+        if (!comment && current == section && eq != std::string::npos && trim(line.substr(0, eq)) == key) {
+            out += setting + "\n";
+            key_seen = true;
+            continue;
+        }
+        out += raw + "\n";
+    }
+    if (key_seen) return out;
+    if (section_seen) return out.insert(insert_at, setting + "\n");
+    if (!out.empty()) out += "\n";
+    return out + "[" + section + "]\n" + setting + "\n";
+}
+
+bool update_config_value(const std::string& path, const std::string& section, const std::string& key,
+                         const std::string& value, std::string* error) {
+    std::string text;
     std::error_code ec;
-    fs::create_directories(fs::path(path).parent_path(), ec);
-    if (ec) {
-        if (error) *error = "cannot create " + fs::path(path).parent_path().string() + ": " + ec.message();
-        return false;
-    }
-    std::string tmp = path + ".tmp";
-    {
-        std::ofstream f(tmp, std::ios::trunc);
+    if (std::filesystem::exists(path, ec)) {
+        std::ifstream f(path);
         if (!f) {
-            if (error) *error = "cannot write " + tmp + ": " + std::strerror(errno);
+            if (error) *error = "cannot read " + path + ": " + std::strerror(errno);
             return false;
         }
-        f << serialize_config(cfg);
-        if (!f.flush()) {
-            if (error) *error = "write failed for " + tmp;
-            return false;
-        }
+        std::ostringstream buf;
+        buf << f.rdbuf();
+        text = buf.str();
     }
-    fs::rename(tmp, path, ec);
-    if (ec) {
-        if (error) *error = "cannot replace " + path + ": " + ec.message();
-        return false;
-    }
-    return true;
+    return write_atomic(path, set_config_value(text, section, key, value), error);
 }
 
 }  // namespace ss

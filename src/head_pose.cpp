@@ -9,27 +9,44 @@
 
 namespace ss {
 
+// OpenCV 4.8 changed FaceDetectorYN to a new model format, and each model
+// works only with its own side of that change. Ubuntu 24.04 and Debian 12
+// ship OpenCV 4.6, so both are bundled and the build picks one.
+#if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 8)
 static constexpr const char* kModelFile = "face_detection_yunet_2023mar.onnx";
+#else
+static constexpr const char* kModelFile = "face_detection_yunet_2022mar.onnx";
+#endif
+
+std::optional<std::string> find_bundled_model(const std::string& file) {
+    namespace fs = std::filesystem;
+    std::vector<fs::path> paths;
+    paths.emplace_back(fs::path(SCREENSENSE_INSTALLED_MODEL_DIR) / file);
+    // Relocated installs (/opt, AppImage) and build trees: look next to the binary.
+    std::error_code ec;
+    const fs::path exe_dir = fs::read_symlink("/proc/self/exe", ec).parent_path();
+    if (!ec) {
+        paths.emplace_back(exe_dir / ".." / "share" / "screensense" / "models" / file);
+        paths.emplace_back(exe_dir / ".." / "models" / file);
+    }
+    paths.emplace_back(fs::path(SCREENSENSE_SOURCE_MODEL_DIR) / file);
+    for (const auto& p : paths) {
+        std::error_code exists_ec;
+        if (fs::is_regular_file(p, exists_ec)) return p.string();
+    }
+    return std::nullopt;
+}
 
 std::optional<std::string> HeadPoseEstimator::find_model(const std::string& configured) {
     namespace fs = std::filesystem;
     std::vector<fs::path> paths;
     if (!configured.empty()) paths.emplace_back(configured);
     if (const char* env = std::getenv("SCREENSENSE_MODEL"); env && *env) paths.emplace_back(env);
-    paths.emplace_back(fs::path(SCREENSENSE_INSTALLED_MODEL_DIR) / kModelFile);
-    // Relocated installs (/opt, AppImage) and build trees: look next to the binary.
-    std::error_code ec;
-    const fs::path exe_dir = fs::read_symlink("/proc/self/exe", ec).parent_path();
-    if (!ec) {
-        paths.emplace_back(exe_dir / ".." / "share" / "screensense" / "models" / kModelFile);
-        paths.emplace_back(exe_dir / ".." / "models" / kModelFile);
-    }
-    paths.emplace_back(fs::path(SCREENSENSE_SOURCE_MODEL_DIR) / kModelFile);
     for (const auto& p : paths) {
         std::error_code ec;
         if (fs::is_regular_file(p, ec)) return p.string();
     }
-    return std::nullopt;
+    return find_bundled_model(kModelFile);
 }
 
 bool HeadPoseEstimator::load(const std::string& model_path, int detect_width, std::string* error) {
@@ -88,6 +105,9 @@ std::optional<FaceObservation> HeadPoseEstimator::estimate(const cv::Mat& frame,
     obs.pose = pose_from_landmarks(lm);
     obs.score = r[14];
     obs.box = cv::Rect2f(r[0] / scale, r[1] / scale, r[2] / scale, r[3] / scale);
+    const auto to_frame = [&](Pt p) { return Pt{p.x / scale, p.y / scale}; };
+    obs.landmarks = {to_frame(lm.right_eye), to_frame(lm.left_eye), to_frame(lm.nose), to_frame(lm.right_mouth),
+                     to_frame(lm.left_mouth)};
     return obs;
 }
 

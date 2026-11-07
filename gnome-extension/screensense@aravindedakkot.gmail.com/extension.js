@@ -13,6 +13,7 @@
 // The extension never touches the camera or sees any video.
 
 import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Gio from 'gi://Gio';
 import Meta from 'gi://Meta';
@@ -56,6 +57,9 @@ const SHELL_IFACE = `
 
 const DAEMON_BUS_NAME = 'org.screensense.Daemon';
 const DAEMON_PATH = '/org/screensense/Daemon';
+const DAEMON_IFACE = 'org.screensense.Daemon1';
+
+const formatTime = ms => (ms === 0 ? 'Off' : `${ms / 1000} s`);
 const DaemonProxy = Gio.DBusProxy.makeProxyWrapper(`
 <node>
   <interface name="org.screensense.Daemon1">
@@ -64,6 +68,10 @@ const DaemonProxy = Gio.DBusProxy.makeProxyWrapper(`
     <method name="Toggle"/>
     <method name="Reload"/>
     <property name="State" type="s" access="read"/>
+    <property name="ActivateWindow" type="b" access="readwrite"/>
+    <property name="MovePointer" type="b" access="readwrite"/>
+    <property name="DwellMs" type="i" access="readwrite"/>
+    <property name="InputHoldMs" type="i" access="readwrite"/>
   </interface>
 </node>`);
 
@@ -244,6 +252,14 @@ class ScreenSenseIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(this._status);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
+        this._activateSwitch = this._addOption('Activate window', 'ActivateWindow');
+        this._pointerSwitch = this._addOption('Move pointer', 'MovePointer');
+        this._timeMenus = [
+            this._addTimeMenu('Look time', 'DwellMs', [300, 600, 1000, 1500, 2000]),
+            this._addTimeMenu('Wait after typing', 'InputHoldMs', [0, 1000, 1500, 2000, 3000, 5000]),
+        ];
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
         this._pauseItem = new PopupMenu.PopupMenuItem('Pause');
         this._pauseItem.connect('activate', () => this._proxy.ToggleRemote(() => {}));
         this.menu.addMenuItem(this._pauseItem);
@@ -256,12 +272,72 @@ class ScreenSenseIndicator extends PanelMenu.Button {
         this._sync();
     }
 
+    _addOption(label, property) {
+        const item = new PopupMenu.PopupSwitchMenuItem(label, true);
+        // Newer GNOME Shell versions also emit this when _sync sets the switch.
+        // Only a state that differs from the service's is a real user change.
+        item.connect('toggled', (_item, state) => {
+            if (state !== this._proxy[property])
+                this._setProperty(property, new GLib.Variant('b', state));
+        });
+        this.menu.addMenuItem(item);
+        return item;
+    }
+
+    _addTimeMenu(label, property, choices) {
+        const menu = new PopupMenu.PopupSubMenuMenuItem(label);
+        const items = choices.map(ms => {
+            const item = new PopupMenu.PopupMenuItem(formatTime(ms));
+            item.connect('activate', () => this._setProperty(property, new GLib.Variant('i', ms)));
+            menu.menu.addMenuItem(item);
+            return {ms, item};
+        });
+        this.menu.addMenuItem(menu);
+        return {label, property, menu, items};
+    }
+
+    // The service owns these settings. It saves the change and announces it,
+    // which is what confirms the switch. If it refuses, say why and put the
+    // switch back, so the menu never shows a setting that is not in effect.
+    _setProperty(property, value) {
+        this._proxy.call('org.freedesktop.DBus.Properties.Set',
+            new GLib.Variant('(ssv)', [DAEMON_IFACE, property, value]),
+            Gio.DBusCallFlags.NONE, -1, null, (proxy, res) => {
+                try {
+                    proxy.call_finish(res);
+                } catch (e) {
+                    const why = e.message.replace(/^GDBus\.Error:\S+ /, '');
+                    Main.notifyError('ScreenSense', `Could not change the setting: ${why}`);
+                    if (this._proxy)
+                        this._sync();
+                }
+            });
+    }
+
+    // A service too old to have the property leaves it null: hide the switch.
+    _syncOption(item, value) {
+        item.visible = value !== null;
+        if (value !== null)
+            item.setToggleState(value);
+    }
+
     _sync() {
         const state = this._proxy.State ?? 'starting';
         const info = STATES[state] ?? {text: state, camera: false};
         this._icon.icon_name = info.camera ? 'camera-web-symbolic' : 'camera-disabled-symbolic';
         this._status.label.text = `ScreenSense: ${info.text}`;
         this._pauseItem.label.text = state === 'paused' ? 'Resume' : 'Pause';
+        this._syncOption(this._activateSwitch, this._proxy.ActivateWindow);
+        this._syncOption(this._pointerSwitch, this._proxy.MovePointer);
+        for (const {label, property, menu, items} of this._timeMenus) {
+            const value = this._proxy[property];
+            menu.visible = value !== null;
+            if (value === null)
+                continue;
+            menu.label.text = `${label}: ${formatTime(value)}`;
+            for (const {ms, item} of items)
+                item.setOrnament(ms === value ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE);
+        }
     }
 
     _calibrate() {
@@ -283,6 +359,7 @@ class ScreenSenseIndicator extends PanelMenu.Button {
 
     destroy() {
         this._proxy.disconnect(this._propsId);
+        this._proxy = null;
         super.destroy();
     }
 });

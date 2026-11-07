@@ -1,0 +1,76 @@
+.\" SPDX-License-Identifier: GPL-3.0-or-later
+.TH SCREENSENSE 1 "November 2026" "screensense 0.2.0" "User Commands"
+.SH NAME
+screensense \- move focus to the monitor you are looking at
+.SH SYNOPSIS
+.B screensense
+.RI [ command ]
+.RI [ options ]
+.SH DESCRIPTION
+.B screensense
+uses the webcam to see which monitor you are facing, and moves keyboard focus,
+the mouse pointer, or both there. It does not switch while you are typing or
+using the mouse. Video is processed on this computer only and is never stored
+or sent anywhere.
+.PP
+It normally runs as a systemd user service. On GNOME, a Shell extension changes
+focus on its behalf and shows a camera icon in the top bar, with switches for
+what focus means, the look time and the wait after typing.
+.SH COMMANDS
+.TP
+.B run
+Run the background service. This is the default.
+.TP
+.B calibrate
+Look at each monitor in turn so ScreenSense learns your setup, then hold your
+eyes still while turning your head, which shows whether eye tracking works with
+your camera. Run it again after moving the camera or rearranging monitors.
+.TP
+.B debug
+Show the live head direction, eye direction and decisions, without changing
+focus. With
+.BR \-\-act ,
+change focus too.
+.TP
+.BR pause ", " resume ", " toggle
+Pause or resume a running service. The camera is off while paused.
+.TP
+.B status
+Print the running service's state. Exits with status 3 if it is not running.
+.TP
+.B cameras
+List detected cameras. Infrared face-unlock cameras are skipped by automatic
+selection.
+.SH OPTIONS
+.TP
+.BI \-\-config " path"
+Use this configuration file instead of the default.
+.TP
+.BI \-\-backend " name"
+Desktop backend:
+.BR auto " (default), " gnome " or " null .
+.TP
+.B \-\-act
+With
+.BR debug ,
+actually change focus.
+.TP
+.B \-\-version
+Print the version.
+.TP
+.BR \-h ", " \-\-help
+Show a summary of commands and options.
+.SH FILES
+.TP
+.I ~/.config/screensense/config.ini
+Settings and calibration. Every key is optional. After editing, run
+.BR "systemctl \-\-user reload screensense" .
+.SH EXIT STATUS
+0 on success, 1 on failure, 2 for a usage error, 3 from
+.B status
+when the service is not running, and 130 when calibration is cancelled.
+.SH SEE ALSO
+.BR systemctl (1),
+.BR gnome\-extensions (1)
+.PP
+https://github.com/AravindEdakkot/screensence

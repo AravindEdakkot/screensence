@@ -1,0 +1,13 @@
+screensense (0.2.0) unstable; urgency=medium
+
+  * Switches in the top-bar menu for activating windows and moving the
+    pointer, and menus for the look time and the wait after typing.
+  * No switch while you are typing or using the mouse.
+  * Optional eye tracking, enabled by calibration only if your eyes can be
+    followed reliably with your camera.
+  * Steadier head reading: larger face detection input and a stricter
+    switching rule, so shifting in your seat no longer changes focus.
+  * Builds with OpenCV 4.5.4 and newer, including Ubuntu 24.04 and Debian 12.
+  * First Debian package.
+
+ -- Aravind Edakkot <aravindedakkot@gmail.com>  Fri, 06 Nov 2026 22:00:00 +0530

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 cmake_minimum_required(VERSION 3.20)
-project(screensense VERSION 0.1.0 LANGUAGES CXX)
+project(screensense VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,7 +19,17 @@ set(SCREENSENSE_SYSTEMD_USER_UNIT_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user"
 
 # Only the OpenCV modules we actually use. objdetect provides FaceDetectorYN,
 # which runs on the dnn module.
-find_package(OpenCV 4.8 REQUIRED COMPONENTS core imgproc videoio objdetect dnn)
+# 4.5.4 introduced FaceDetectorYN. Which face model fits depends on the version.
+find_package(OpenCV 4.5.4 REQUIRED COMPONENTS core imgproc videoio objdetect dnn)
+# The older model scores real faces lower, so it gets a lower default cutoff.
+if(OpenCV_VERSION VERSION_GREATER_EQUAL 4.8)
+  set(SCREENSENSE_FACE_MODEL models/face_detection_yunet_2023mar.onnx)
+  set(SCREENSENSE_MIN_FACE_SCORE 0.75)
+else()
+  set(SCREENSENSE_FACE_MODEL models/face_detection_yunet_2022mar.onnx)
+  set(SCREENSENSE_MIN_FACE_SCORE 0.5)
+endif()
+message(STATUS "OpenCV ${OpenCV_VERSION}: using ${SCREENSENSE_FACE_MODEL}")
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
 
@@ -29,12 +39,14 @@ add_library(screensense_core STATIC
   src/tracker.cpp
 )
 target_include_directories(screensense_core PUBLIC src)
+target_compile_definitions(screensense_core PUBLIC SCREENSENSE_DEFAULT_MIN_FACE_SCORE=${SCREENSENSE_MIN_FACE_SCORE})
 target_compile_options(screensense_core PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(screensense
   src/main.cpp
   src/camera.cpp
   src/head_pose.cpp
+  src/eye_tracker.cpp
   src/daemon_bus.cpp
   src/engine.cpp
   src/calibrate.cpp
@@ -51,7 +63,8 @@ target_compile_definitions(screensense PRIVATE
 )
 
 install(TARGETS screensense RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES models/face_detection_yunet_2023mar.onnx
+install(FILES data/screensense.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+install(FILES ${SCREENSENSE_FACE_MODEL} models/iris_landmark.onnx models/LICENSE.iris_landmark
         DESTINATION ${CMAKE_INSTALL_DATADIR}/screensense/models)
 configure_file(data/systemd/screensense.service.in
                ${CMAKE_CURRENT_BINARY_DIR}/screensense.service @ONLY)

@@ -35,8 +35,10 @@ void Tracker::set_current(int monitor) {
     state_.pending = -1;
 }
 
-std::optional<int> Tracker::update(std::optional<Pose> pose, int64_t now_ms) {
+std::optional<int> Tracker::update(std::optional<Pose> pose, int64_t now_ms,
+                                   const std::function<bool()>& input_active) {
     state_.has_face = pose.has_value();
+    state_.input_hold = false;
     if (!pose) {
         // Hold: losing the face must never move focus.
         state_.pending = -1;
@@ -86,6 +88,10 @@ std::optional<int> Tracker::update(std::optional<Pose> pose, int64_t now_ms) {
     }
     if (now_ms - state_.pending_since_ms >= params_.dwell_ms &&
         now_ms - last_switch_ms_ >= params_.cooldown_ms) {
+        if (input_active && input_active()) {
+            state_.input_hold = true;
+            return std::nullopt;
+        }
         state_.current = candidate;
         state_.pending = -1;
         last_switch_ms_ = now_ms;

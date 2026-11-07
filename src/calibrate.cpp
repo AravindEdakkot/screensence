@@ -17,7 +17,9 @@
 #include "config.hpp"
 #include "daemon_bus.hpp"
 #include "engine_util.hpp"
+#include "eye_tracker.hpp"
 #include "head_pose.hpp"
+#include "pose_math.hpp"
 
 namespace ss {
 namespace {
@@ -25,6 +27,7 @@ namespace {
 constexpr int kSettleMs = 2000;   // time to turn and settle on the target
 constexpr int kSampleMs = 2500;   // time spent recording
 constexpr size_t kMinSamples = 8;
+constexpr int kEyeFitMs = 6000;   // time spent turning the head with the eyes held still
 
 double median(std::vector<double> v) {
     std::sort(v.begin(), v.end());
@@ -34,7 +37,8 @@ double median(std::vector<double> v) {
 
 struct Measured {
     Pose center;
-    double spread = 0;  // median distance of samples from the centre
+    std::optional<double> eye;  // median iris offset, if the eyes could be read
+    double spread = 0;          // median distance of samples from the centre
     size_t samples = 0;
 };
 
@@ -73,11 +77,25 @@ int run_calibrate(const CommonOptions& opt) {
         return 1;
     }
 
+    // A calibration only matches the settings it was recorded with, so this is
+    // the moment to bring settings saved by older versions up to what works.
+    cfg.capture_width = std::max(cfg.capture_width, 640);
+    cfg.capture_height = std::max(cfg.capture_height, 480);
+    cfg.detect_width = std::max(cfg.detect_width, 320);
+
     auto model = HeadPoseEstimator::find_model(cfg.model_path);
     HeadPoseEstimator estimator;
     if (!model || !estimator.load(*model, cfg.detect_width, &err)) {
         std::fprintf(stderr, "screensense: %s\n", model ? err.c_str() : "face model not found");
         return 1;
+    }
+
+    EyeTracker eyes;
+    if (cfg.use_eyes) {
+        const auto eye_model = find_bundled_model("iris_landmark.onnx");
+        if (!eye_model || !eyes.load(*eye_model, &err)) {
+            std::printf("The eye model is not available, so calibrating for head direction only.\n");
+        }
     }
 
     DaemonBorrow borrow;
@@ -116,18 +134,21 @@ int run_calibrate(const CommonOptions& opt) {
                 wait_ms(30, stop);
             }
             backend->show_calibration_target(m.index, "Hold still...");
-            std::vector<double> yaw, pitch;
+            std::vector<double> yaw, pitch, eye;
             const int64_t sample_end = now_ms() + kSampleMs;
             while (!stop && now_ms() < sample_end) {
                 if (!camera.read(frame)) continue;
                 if (auto obs = estimator.estimate(frame, cfg.min_face_score)) {
                     yaw.push_back(obs->pose.yaw);
                     pitch.push_back(obs->pose.pitch);
+                    if (eyes.loaded())
+                        if (const auto e = eyes.offset(frame, obs->landmarks, now_ms())) eye.push_back(*e);
                 }
                 g_main_context_iteration(nullptr, FALSE);
             }
             if (yaw.size() >= kMinSamples) {
                 best.center = {median(yaw), median(pitch)};
+                if (eye.size() >= kMinSamples) best.eye = median(eye);
                 std::vector<double> d;
                 for (size_t i = 0; i < yaw.size(); ++i)
                     d.push_back(std::hypot(yaw[i] - best.center.yaw, pitch[i] - best.center.pitch));
@@ -147,10 +168,49 @@ int run_calibrate(const CommonOptions& opt) {
             return 1;
         }
         result[m.index] = best;
-        std::printf("  monitor %d: yaw %+.3f  pitch %.3f  (spread %.3f, %zu frames)\n", m.index + 1,
-                    best.center.yaw, best.center.pitch, best.spread, best.samples);
+        std::printf("  monitor %d: yaw %+.3f  pitch %.3f  eye ", m.index + 1, best.center.yaw, best.center.pitch);
+        if (best.eye) std::printf("%+.3f", *best.eye);
+        else std::printf("unread");
+        std::printf("  (spread %.3f, %zu frames)\n", best.spread, best.samples);
     }
     backend->hide_calibration_target();
+
+    // Do the eyes tell us anything on this camera? Hold them still and turn the
+    // head: if the readings do not move the opposite way, they must not steer.
+    bool all_eyes = eyes.loaded();
+    for (const auto& r : result) all_eyes = all_eyes && r.eye.has_value();
+    EyeFit fit;
+    if (all_eyes && !stop) {
+        // The monitor the camera sees most head-on gives the clearest view of the eyes.
+        int facing = 0;
+        for (size_t i = 0; i < result.size(); ++i)
+            if (std::abs(result[i].center.yaw) < std::abs(result[facing].center.yaw)) facing = static_cast<int>(i);
+        for (int attempt = 0; attempt < 2 && !stop; ++attempt) {
+            backend->show_calibration_target(facing, "Keep your eyes here and slowly turn your head left and right");
+            cv::Mat frame;
+            const int64_t settle_end = now_ms() + kSettleMs;
+            while (!stop && now_ms() < settle_end) {
+                camera.read(frame);
+                wait_ms(30, stop);
+            }
+            std::vector<double> yaw, eye;
+            const int64_t sample_end = now_ms() + kEyeFitMs;
+            while (!stop && now_ms() < sample_end) {
+                if (!camera.read(frame)) continue;
+                if (const auto obs = estimator.estimate(frame, cfg.min_face_score)) {
+                    if (const auto e = eyes.offset(frame, obs->landmarks, now_ms())) {
+                        yaw.push_back(obs->pose.yaw);
+                        eye.push_back(*e);
+                    }
+                }
+                g_main_context_iteration(nullptr, FALSE);
+            }
+            fit = fit_eye_gain(yaw, eye);
+            if (fit.head_moved) break;
+            if (!stop && attempt == 0) std::printf("  Your head barely moved, so trying that once more.\n");
+        }
+        backend->hide_calibration_target();
+    }
     if (stop) {
         std::printf("Cancelled; the previous calibration was kept.\n");
         return 130;
@@ -173,9 +233,26 @@ int run_calibrate(const CommonOptions& opt) {
 
     cfg.calibration.layout.clear();
     cfg.calibration.centers.clear();
+    cfg.calibration.eyes.clear();
     for (const auto& m : mons) {
         cfg.calibration.layout.push_back(m.geometry);
         cfg.calibration.centers.push_back(result[m.index].center);
+        if (fit.usable) cfg.calibration.eyes.push_back(*result[m.index].eye);
+    }
+    if (fit.usable) {
+        cfg.eye_gain = fit.gain;
+        std::printf("Eye tracking is on: your eyes followed correctly (match %.2f, weight %.2f).\n",
+                    -fit.correlation, fit.gain);
+    } else if (eyes.loaded()) {
+        if (!all_eyes)
+            std::printf("Eye tracking is off: your eyes could not be read on every monitor.\n");
+        else if (!fit.head_moved)
+            std::printf("Eye tracking is off: your head did not move enough to measure it.\n");
+        else
+            std::printf("Eye tracking is off: your eyes could not be followed reliably (match %.2f).\n",
+                        -fit.correlation);
+        std::printf("ScreenSense will use head direction only. Better light may help, and you can\n"
+                    "try again by running `screensense calibrate`.\n");
     }
     if (!save_config(cfg, config_path, &err)) {
         std::fprintf(stderr, "screensense: %s\n", err.c_str());

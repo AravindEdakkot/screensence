@@ -88,6 +88,20 @@ public:
         return true;
     }
 
+    // Mutter's own service, so this needs nothing from the extension.
+    std::optional<int64_t> input_idle_ms() override {
+        if (!bus_) return std::nullopt;
+        GVariant* r = g_dbus_connection_call_sync(bus_, "org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core",
+                                                  "org.gnome.Mutter.IdleMonitor", "GetIdletime", nullptr,
+                                                  G_VARIANT_TYPE("(t)"), G_DBUS_CALL_FLAGS_NO_AUTO_START, kTimeoutMs,
+                                                  nullptr, nullptr);
+        if (!r) return std::nullopt;
+        guint64 idle = 0;
+        g_variant_get(r, "(t)", &idle);
+        g_variant_unref(r);
+        return static_cast<int64_t>(idle);
+    }
+
     std::optional<int> current_monitor(bool by_window) override {
         GVariant* r = call("GetCurrentMonitor", g_variant_new("(b)", by_window), G_VARIANT_TYPE("(i)"), nullptr);
         if (!r) return std::nullopt;
